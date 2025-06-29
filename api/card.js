@@ -1,41 +1,50 @@
+const fetch = require("node-fetch");
 const settings = require("../settings.json");
-const fs = require('fs');
 
-const indexjs = require("../index.js");
-const fetch = require('node-fetch');
-var validators = require('credit-card-validate');
-const stripe = require('stripe')(settings.stripe.key);
+module.exports.load = async function (app, db) {
+  app.post("/buycoins", async (req, res) => {
+    if (!req.session.pterodactyl) {
+      return res.redirect("/?error=" + encodeURIComponent(Buffer.from("You are not logged in.").toString('base64')));
+    }
 
-module.exports.load = async function(app, db) {
-  app.get("/buycoins", async(req, res) => {
-      if(!req.session.pterodactyl) return res.redirect("/?error="+encodeURIComponent((new Buffer("You are not logged in.")).toString('base64')));
-      const token = await stripe.tokens.create({
-                  card: {
-                    number: `${req.query.number}`,
-                    exp_month: +req.query.month,
-                    exp_year: +req.query.year,
-                    cvc: req.query.vrf,
-                  },
-              });
-              const charge = await stripe.charges.create({
-  				amount: req.query.amt * settings.stripe.amount,
-  				currency: 'gbp',
-  				source: token,
-  				description: 'Transaction: ' + settings.stripe.coins * req.query.amt,
-			  });
-              if(charge.status != "succeeded") return res.redirect("/buy?error="+encodeURIComponent((new Buffer("Invalid card information.")).toString('base64')));
-      		let ccoins = await db.get(`coins-${req.session.userinfo.id}`)
-            ccoins += settings.stripe.coins * req.query.amt;
-      		await db.set(`coins-${req.session.userinfo.id}`, ccoins)
+    const amount = parseFloat(req.body.amount);
+    const currency = req.body.currency;
+    const email = req.body.email;
+
+    if (!amount || isNaN(amount) || amount < 0.1) {
+      return res.redirect("/buy?error=" + encodeURIComponent(Buffer.from("Invalid amount").toString('base64')));
+    }
+
+    try {
+      const response = await fetch("https://api.oxapay.com/merchant/create-invoice", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${settings.oxapay.api_key}`
+        },
+        body: JSON.stringify({
+          merchant: settings.oxapay.merchant_id,
+          amount: amount,
+          fiat: "USD",
+          coin: currency,
+          email: email,
+          order_id: `${req.session.userinfo.id}_${Date.now()}`,
+          callback_url: `${settings.website.url}/oxapay/callback`,
+          redirect_url: `${settings.website.url}/buy?success=true`
+        })
+      });
+
+      const data = await response.json();
+
+      if (!data.status || data.status !== "success") {
+        return res.redirect("/buy?error=" + encodeURIComponent(Buffer.from("OxaPay error").toString('base64')));
+      }
+
+      return res.redirect(data.invoice_url);
+
+    } catch (err) {
+      console.error("OxaPay error:", err);
+      return res.redirect("/buy?error=" + encodeURIComponent(Buffer.from("Something went wrong").toString('base64')));
+    }
   });
 };
-
-function makeid(length) {
-  let result = '';
-  let characters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
-  let charactersLength = characters.length;
-  for (let i = 0; i < length; i++) {
-     result += characters.charAt(Math.floor(Math.random() * charactersLength));
-  }
-  return result;
-}
